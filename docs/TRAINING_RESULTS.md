@@ -15,11 +15,16 @@ challenge set, 68,258 rows remain, split into 47,780 training, 10,239 validation
 ```
 
 `models/xss_neural.pkl` is the default for chat, `predict_xss.py` and the agent, and
-is the model published at https://huggingface.co/hareramray325/websec. It has
-1,959,361 parameters: character embeddings, parallel convolutions over 1, 3, 5 and
+is the model published at https://huggingface.co/hareramray325/websec. The architecture
+has 1,959,361 parameters: character embeddings, parallel convolutions over 1, 3, 5 and
 7 characters, two stride-2 convolutions, 4 Transformer encoder blocks (width 192,
-8 heads) and a pooled classification head. It was trained from random weights on a
-laptop RTX 5050: 12 epochs in 256 s on mains power, with epoch 9 kept on validation data.
+8 heads) and a pooled classification head.
+
+**As of 2026-11-12 both the default and the published model are the one trained on the
+merged agent-shaped data** (see "Agent-shaped training data" below), so the default
+stays byte-for-byte identical to the Hugging Face model. The rest of this section
+describes the earlier Mereani-only model it replaced, kept for comparison: trained from
+random weights on a laptop RTX 5050, 12 epochs in 256 s on mains power, epoch 9 kept.
 
 Both models were scored on the same rows, each at its own threshold tuned on
 validation data for 0.1% false alarms (linear 0.649, neural 0.728).
@@ -73,6 +78,61 @@ Lessons from discarded runs, for anyone retraining:
    the validation number. On battery the same training is about three times slower.
 
 All details are in `models/xss_metrics.json` and `models/xss_neural_metrics.json`.
+
+## Agent-shaped training data
+
+`src/prepare_agent_data.py` (generators in `src/agent_data.py`) adds rows in the
+three shapes the agent scores: parameter/field values, request targets from access
+logs, and whole log lines. It was merged with the Mereani data and trained to
+**separate** files, so the published `models/xss_neural.pkl` is left untouched:
+
+```powershell
+.\.venv\Scripts\python.exe src\prepare_agent_data.py --merge
+.\.venv\Scripts\python.exe src\train_xss.py --data data\processed\xss_expanded.csv --out models\xss_expanded.pkl
+.\.venv\Scripts\python.exe src\train_xss_neural.py --data data\processed\xss_expanded.csv --out models\xss_neural_expanded.pkl --baseline models\xss_expanded.pkl
+```
+
+The merged file is 96,835 rows: 37,941 generated agent rows (benign values, request
+targets and log lines; other-language text; and non-XSS attacks as benign) plus the
+Mereani, synthetic and twin_urls rows. The neural model trained on it, each model at
+its own validation-tuned threshold, on the shared test split, challenge set and the
+evaluation-only external benchmark:
+
+| Measurement | Published neural (Mereani only) | Neural on merged data |
+|---|---|---|
+| Held-out detection rate | 98.89% | 99.53% |
+| Held-out false-alarm rate | 0.07% | 0.01% |
+| Held-out detection at exactly 0.1% false alarms | 98.89% | 99.71% |
+| Challenge attacks caught | 60 / 60 | 60 / 60 |
+| Challenge benign false alarms | 0 / 80 | 0 / 80 |
+| External attacks caught (SecLists, of 7,896) | 7,712 (97.7%) | 7,734 (97.9%) |
+| External benign false alarms (of 6,993) | 5 | 5 |
+
+The held-out split is not the same rows as the published model's, because the merged
+data adds the generated rows, so read these as "both strong" rather than a controlled
+A/B. The controlled signal is below.
+
+**Where the generated data clearly helps.** On the held-out test split, every
+generated benign source had **0 false alarms**: 723 parameter values, 832 request
+targets, 693 log lines, 450 other-language rows, and 333 non-XSS attacks (SQLi,
+traversal, command injection, SSRF, scanner probes). The linear model on the same
+data behaves the same way. These are exactly the shapes `agent.py` feeds the detector,
+and they were where the first model raised false alarms.
+
+**Where it helps less, and why.** On a separate hand-written probe of 31 deliberately
+tricky strings (framework code such as `(click)="save()"`, and sentences about XSS
+that contain real markup), the merged neural model flagged 10 against the published
+model's 12. Scores dropped (for example `<code>print('hello')</code>` fell from 0.994
+to 0.794), but several still cross the threshold. Some of those are **intended**: a
+literal `<script src=...>` tag, or an embedded live `<script>alert(1)</script>`, in an
+input is scored as an attack — the datasets label injected markup that way, and the
+detector classifies inputs, not whole trusted pages (see the note above). Treat the
+code cases as a reminder to measure on your own traffic before blocking, not as a
+solved problem.
+
+Nothing was trained on the challenge set or the external benchmark. The generated
+templates were written with the first model's SecLists mistakes in view, so the
+external benchmark no longer measures those families fully independently.
 
 ## Security agent
 
@@ -152,12 +212,16 @@ tools in `src/chat.py` remain the only reliable part of the assistant.
 
 ## Verification
 
-All 26 automated tests passed (`python -m unittest discover -s tests`), including
+All 32 automated tests passed (`python -m unittest discover -s tests`), including
 pickle round trips, causal attention, assistant-only target masks, real weight
 updates, checkpoint continuation, conversation split isolation, challenge exclusion,
 scanner integration, chat follow-ups, the neural detector (shared loader, padding
-invariance, a real training run) and the agent (active and passive audits of a local
-test site, off-site redirects, log triage, the `/agent` chat command). PyTorch is
+invariance, a real training run, and resuming a checkpoint's weights to continue
+training), the agent (active and passive audits of a local test site, off-site
+redirects, log triage, the `/agent` chat command) and the agent-shaped data generators
+(benign shapes never carry injectable markup, `injected` flags real payloads but not
+look-alikes, payload shaping preserves the payload, and the builder yields clean rows
+of both classes). PyTorch is
 now `2.11.0+cu128`; the language-model results above were produced with the CPU
 build and were not re-run. The custom CSV importer and interactive tools-only chat
 were also run end to end. The chat scanner was exercised against a local HTTP server with known

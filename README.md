@@ -174,6 +174,37 @@ Import a labelled CSV and retrain the classifier:
 .\.venv\Scripts\python.exe src\train_xss.py --data data\processed\xss_expanded.csv --out models\xss_expanded.pkl
 ```
 
+Generate rows in the three shapes the agent scores (parameter/field values, request
+targets, log lines) and merge them in, to cut false alarms on code, security talk and
+other-language text without weakening attack detection:
+
+```powershell
+.\.venv\Scripts\python.exe src\prepare_agent_data.py --merge
+.\.venv\Scripts\python.exe src\train_xss_neural.py --data data\processed\xss_expanded.csv --out models\xss_neural_expanded.pkl --baseline models\xss_expanded.pkl
+```
+
+Attack rows reuse existing payloads (Mereani and `xss_augment.synthetic_attack`)
+placed into those shapes; the benign side generates ordinary text, plus non-XSS
+attacks (SQLi, traversal, SSRF, scanner probes) as benign so the XSS detector does
+not fire on them. See [the dataset guide](docs/DATASETS.md#agent-shaped-rows-for-the-detector).
+
+### Continue (resume) training the same neural model
+
+`train_xss_neural.py --resume` continues your own saved checkpoint instead of starting
+from random weights: same architecture, a fresh optimizer, and the threshold and
+calibration re-tuned on validation data afterwards. Use it to fine-tune on added data
+with a smaller learning rate and fewer epochs:
+
+```powershell
+.\.venv\Scripts\python.exe src\train_xss_neural.py --resume models\xss_neural_expanded.pkl --data data\processed\xss_expanded.csv --out models\xss_neural_resumed.pkl --epochs 4 --learning-rate 2e-4
+```
+
+The saved metrics record the parent checkpoint's path, SHA-256 and initialization, so a
+continued model's lineage is traceable. `--width/--layers/--heads` are ignored when
+resuming (the checkpoint's architecture is reused). The linear baseline has no resume
+step: it is cheap to retrain in full. To keep the published `models/xss_neural.pkl`,
+resume to a different `--out`.
+
 Train your language model on your own JSONL conversations:
 
 ```powershell
@@ -261,7 +292,7 @@ licensed or generated data:
 | Data | Used for | License |
 |---|---|---|
 | [Mereani & Howe XSS dataset](https://github.com/fmereani/Cross-Site-Scripting-XSS) | XSS detector training | MIT |
-| Generated samples (`src/synthetic.py`, `src/xss_augment.py`) | XSS detector training | Part of this project |
+| Generated samples (`src/synthetic.py`, `src/xss_augment.py`, `src/agent_data.py`) | XSS detector training | Part of this project |
 | [SecLists XSS lists](https://github.com/danielmiessler/SecLists/tree/master/Fuzzing/XSS) | XSS evaluation only | MIT |
 | [WikiText](https://huggingface.co/datasets/Salesforce/wikitext) | Language model; XSS false-alarm evaluation | CC BY-SA 3.0 / GFDL |
 | [OpenAssistant oasst1](https://huggingface.co/datasets/OpenAssistant/oasst1) | Language model; XSS false-alarm evaluation | Apache 2.0 |

@@ -79,6 +79,14 @@ def model_card(repo_id: str, license_id: str, config: dict, m: dict) -> str:
         "mereani": "| [Mereani & Howe XSS dataset](https://github.com/fmereani/Cross-Site-Scripting-XSS) | XSS attack URLs and payloads; benign URLs, JavaScript and text | MIT |",
         "synthetic": "| Generated benign samples | Everyday HTML, URLs, code and prose that a naive model mistakes for attacks | Created for this model |",
         "twin_urls": "| Benign copies of attack URLs | Same sites and parameter names with the payload replaced | Derived from Mereani |",
+        "agent_value": "| Generated parameter and form-field values | Ordinary values the agent scores, so the model stops flagging them | Created for this model |",
+        "agent_request": "| Generated request targets | Ordinary request targets as access logs record them | Created for this model |",
+        "agent_line": "| Generated log lines | Application, server, mail and build log lines | Created for this model |",
+        "agent_multilingual": "| Generated non-English text | Text in other scripts and languages that must not read as an attack | Created for this model |",
+        "agent_other_attack": "| Generated non-XSS attacks (benign here) | SQLi, traversal, command injection, SSRF and scanner probes, labelled benign for an XSS-only detector | Created for this model |",
+        "agent_attack_value": "| XSS payloads as field values | Existing payloads placed into the agent's value shape | Derived from Mereani (MIT) and generated templates |",
+        "agent_attack_request": "| XSS payloads in request targets | Existing payloads placed into one URL parameter | Derived from Mereani (MIT) and generated templates |",
+        "agent_attack_line": "| XSS payloads in log lines | Existing payloads placed into a log line | Derived from Mereani (MIT) and generated templates |",
     }
     unknown = sources - known_sources.keys()
     if unknown:  # a source added with import_dataset.py: its license must be written into the card by hand

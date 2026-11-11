@@ -13,6 +13,7 @@ CSV alone cannot teach a model to have a useful conversation.
 | [Kaggle: Cross site scripting XSS dataset for Deep learning](https://www.kaggle.com/datasets/syedsaqlainhussain/cross-site-scripting-xss-dataset-for-deep-learning) | Candidate additional labelled corpus. Download it and inspect the actual column names and label meanings before importing. | Check its current license and duplicates against your existing corpus; do not assume it is an independent test source. |
 | [SecLists](https://github.com/danielmiessler/SecLists/tree/master/Fuzzing/XSS) | **Used for evaluation only.** `prepare_external.py` downloads nine payload lists into `data/processed/xss_external.csv`, and both trainers report results on it. | MIT licence. Do not import these lists for training, or the external benchmark stops being independent. Payload collection, not a balanced labelled set: a few lines are inert fragments, and many payloads also appear in the training sources, so lines matching no project row are reported separately. |
 | [FuzzDB](https://github.com/fuzzdb-project/fuzzdb/tree/master/attack/xss) | Additional reviewed XSS patterns for training or a separate evaluation set. | Attack-only material needs benign examples alongside it. The project describes New BSD / CC Attribution licensing; preserve attribution and check file-specific terms. |
+| Generated agent-shaped rows (`src/agent_data.py`) | `prepare_agent_data.py` writes `data/processed/xss_agent.csv`: benign and attack rows in the three shapes the agent scores (parameter/field values, request targets, log lines). Merge it with `--merge`. | Part of this project. Benign side only invents benign text; attack rows reuse existing payloads (Mereani + `xss_augment.synthetic_attack`) placed into those shapes. See below. |
 | Your application's reviewed traffic | Add realistic benign text, allowed HTML, URLs, and confirmed attack cases. | Remove secrets and personal data. Keep a later time period or separate application for final testing. |
 
 Do not train this binary detector on a generic "attack" label from a mixed HTTP or
@@ -56,6 +57,42 @@ independent leave-one-source-out evaluation. Split related payload families befo
 training if you need a stronger estimate of generalization. Only import data whose
 license allows your use: the exporter in `src/export_hf.py` refuses to build a model
 card for a training source it has no license entry for.
+
+## Agent-shaped rows for the detector
+
+`src/agent.py` hands the detector three shapes of text: values of query parameters
+and form fields, request targets pulled out of access-log lines, and whole lines of
+other logs. The first neural detector was strong on attacks but raised false alarms
+on ordinary text in those shapes — program code, talk about web security, and text
+in other scripts. `src/agent_data.py` generates rows that teach those shapes, and
+`src/prepare_agent_data.py` writes them as a canonical CSV:
+
+```powershell
+.\.venv\Scripts\python.exe src\prepare_agent_data.py --merge
+.\.venv\Scripts\python.exe src\train_xss_neural.py --data data\processed\xss_expanded.csv --out models\xss_neural_expanded.pkl --baseline models\xss_expanded.pkl
+```
+
+What it generates:
+
+- **Benign (label 0).** Parameter/field values, request targets as access logs
+  record them, and lines of application, server, mail and build logs. Plus two
+  deliberately confusing groups: text in other scripts and languages, and real
+  attacks that are **not XSS** (SQL injection, path traversal, command injection,
+  SSRF, scanner probes) — these are benign rows because this detector's job is XSS
+  only, and the agent must not cry XSS at a SQLi string.
+- **Attack (label 1).** No new payload is invented. Existing payloads — from the
+  Mereani dataset and from `xss_augment.synthetic_attack` — are placed into the
+  agent's shapes with `as_value`, `as_request` and `as_line`, so the model sees the
+  same attacks as a raw field value, inside a URL parameter, and inside a log line.
+
+Two guards keep the labels clean before any split: `agent_data.injected()` drops
+any candidate benign row that contains script-capable markup, and the builder drops
+any benign row whose normalised text equals a known attack. `--counts` scales the
+benign generators; `--merge` concatenates with `data/processed/xss.csv` and writes a
+cleaned `xss_expanded.csv`. Keep these rows out of the challenge set and the
+evaluation-only external benchmark, which must stay independent of training data.
+The templates were written with the first model's SecLists mistakes in view, so the
+external benchmark no longer measures these families fully independently.
 
 ## Language and conversation datasets
 

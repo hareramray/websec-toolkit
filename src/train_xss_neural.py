@@ -1,9 +1,16 @@
 """Train the neural XSS detector on the GPU, evaluate it, and compare it with the linear model.
 
-Usage:  python src/train_xss_neural.py [--epochs 12] [--device auto]
+Usage:
+  python src/train_xss_neural.py [--epochs 12] [--device auto]
+  python src/train_xss_neural.py --resume models/xss_neural.pkl --epochs 4 --learning-rate 2e-4
 
 Writes models/xss_neural.pkl and models/xss_neural_metrics.json. One epoch takes
 about 20 s on a laptop RTX 5050 on mains power, and several times longer on battery.
+
+With --resume, training continues your own saved checkpoint (same architecture, fresh
+optimizer) instead of starting from random weights -- for example to fine-tune the
+model on added data. Use a smaller --learning-rate and fewer --epochs than a run from
+scratch. The threshold and calibration are always re-tuned on validation data after.
 
 The rows, the train/validation/test split, the threshold rule and the evaluations
 are the ones train_xss.py uses, so the two models can be compared number for number:
@@ -16,6 +23,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import math
@@ -35,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from train_xss import DATA_PATH, by_source, challenge, evaluate, external, show, split_data, threshold_for_fpr  # noqa: E402
 from xss_augment import epoch_examples  # noqa: E402
 from xss_model import MODEL_PATH, WINDOW, load_model, score  # noqa: E402
-from xss_neural import NEURAL_PATH, NeuralConfig, NeuralXSS, XSSNet, encode, pad, save_neural  # noqa: E402
+from xss_neural import NEURAL_PATH, NeuralConfig, NeuralXSS, XSSNet, encode, load_xssnet, pad, save_neural  # noqa: E402
 
 SEED = 42
 BUCKET = 50  # batches sorted by length together, so short rows are not padded to 1000
@@ -82,18 +90,19 @@ def epoch_rows(df: pd.DataFrame, rng: random.Random) -> tuple[list[str], list[in
 
 def fit_neural(train: pd.DataFrame, val: pd.DataFrame | None = None, *, config: NeuralConfig | None = None, epochs: int = 12,
                batch_size: int = 128, learning_rate: float = 6e-4, device: str = "cpu", seed: int = SEED,
-               log=print) -> tuple[XSSNet, list[dict]]:
-    """Train from random weights. Returns the averaged weights of the best epoch and the history.
+               init_model: XSSNet | None = None, log=print) -> tuple[XSSNet, list[dict]]:
+    """Train the network. Returns the averaged weights of the best epoch and the history.
 
-    With `val`, the best epoch is the one with the highest validation detection at
-    0.1% false alarms, checked in the second half of training. Without it, the last
-    epoch is returned.
+    Starts from random weights, or from `init_model` to continue your own checkpoint
+    (its architecture is used; the optimizer always starts fresh). With `val`, the best
+    epoch is the one with the highest validation detection at 0.1% false alarms, checked
+    in the second half of training. Without it, the last epoch is returned.
     """
     if min(epochs, batch_size) < 1 or not math.isfinite(learning_rate) or learning_rate <= 0:
         raise ValueError("epochs, batch size and learning rate must be positive.")
     torch.manual_seed(seed)
     rng = random.Random(seed)
-    model = XSSNet(config or NeuralConfig()).to(device)
+    model = (init_model if init_model is not None else XSSNet(config or NeuralConfig())).to(device)
     average = copy.deepcopy(model).eval()  # running average of the weights: steadier than the last step
     for parameter in average.parameters():
         parameter.requires_grad_(False)
@@ -204,22 +213,31 @@ def compare_with(baseline: Path, test: pd.DataFrame, known: set[str], neural: di
 
 def train(data: Path = DATA_PATH, out: Path = NEURAL_PATH, *, target_fpr: float = 0.001, epochs: int = 12, batch_size: int = 128,
           learning_rate: float = 6e-4, config: NeuralConfig | None = None, device: str = "auto", seed: int = SEED,
-          baseline: Path = MODEL_PATH, exclude_sources: tuple[str, ...] = ()) -> dict:
+          baseline: Path = MODEL_PATH, exclude_sources: tuple[str, ...] = (), init: Path | None = None) -> dict:
     """Train on `data`, evaluate, save the pickle and the metrics. Returns the metrics.
 
     `baseline` must have been trained with the same `exclude_sources`, or its scores
-    on this test split are not a fair comparison.
+    on this test split are not a fair comparison. With `init`, training continues your
+    own saved neural checkpoint (same architecture, fresh optimizer) instead of starting
+    from random weights; the threshold and calibration are re-tuned afterwards as usual.
     """
     if not 0 <= target_fpr <= 1:
         raise ValueError("target_fpr must be between 0 and 1")
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     df, cleaning, train_rows, val, test = split_data(data, exclude_sources)
+
+    init_model, parent = None, None
+    if init:
+        init_model, parent_bundle = load_xssnet(init, "cpu")
+        config = NeuralConfig(**parent_bundle["config"])  # the checkpoint's architecture wins; weights must fit it
+        parent = parent_bundle.get("metadata") or {}
+        print(f"continuing {init} ({sum(p.numel() for p in init_model.parameters()):,} parameters); optimizer starts fresh")
     config = config or NeuralConfig()
     started = time.time()
     print(f"training on {device}" + (f" ({torch.cuda.get_device_name(0)})" if device.startswith("cuda") else ""), flush=True)
     model, history = fit_neural(train_rows, val, config=config, epochs=epochs, batch_size=batch_size,
-                                learning_rate=learning_rate, device=device, seed=seed)
+                                learning_rate=learning_rate, device=device, seed=seed, init_model=init_model)
     parameters = sum(p.numel() for p in model.parameters())
     print(f"trained in {time.time() - started:.0f}s, {parameters:,} parameters")
 
@@ -230,10 +248,16 @@ def train(data: Path = DATA_PATH, out: Path = NEURAL_PATH, *, target_fpr: float 
     threshold = max(0.5, threshold_for_fpr(y_val, score(detector, val["text"].tolist(), normalized=True), target_fpr))
 
     best = max((record["epoch"] for record in history if record.get("best")), default=epochs)
-    metrics = {"model": {"kind": "char_cnn_transformer", "initialization": "random_weights", "parameters": parameters, "config": asdict(config),
-                         "device": device, "epochs": epochs, "best_epoch": best, "batch_size": batch_size, "learning_rate": learning_rate,
-                         "seed": seed, "temperature": round(temperature, 4), "training_seconds": round(time.time() - started, 1),
-                         "torch_version": str(torch.__version__)},
+    model_info = {"kind": "char_cnn_transformer", "initialization": "continued_own_checkpoint" if init else "random_weights",
+                  "parameters": parameters, "config": asdict(config), "device": device, "epochs": epochs, "best_epoch": best,
+                  "batch_size": batch_size, "learning_rate": learning_rate, "seed": seed, "temperature": round(temperature, 4),
+                  "training_seconds": round(time.time() - started, 1), "torch_version": str(torch.__version__)}
+    if init:
+        parent_model = (parent or {}).get("model", {})
+        model_info["parent_checkpoint"] = {"path": str(init), "sha256": hashlib.sha256(init.read_bytes()).hexdigest(),
+                                           "initialization": parent_model.get("initialization"), "rows": (parent or {}).get("rows"),
+                                           "best_epoch": parent_model.get("best_epoch"), "torch_version": parent_model.get("torch_version")}
+    metrics = {"model": model_info,
                "threshold": threshold, "target_fpr": target_fpr, "rows": int(len(df)), "sources": sorted(df["source"].unique()),
                "cleaning": cleaning, "history": history}
     test_scores = score(detector, test["text"].tolist(), normalized=True)
@@ -270,13 +294,17 @@ def main() -> None:
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--exclude-source", action="append", default=[],
                         help="drop rows of this source before splitting (repeatable); train --baseline with the same exclusions")
+    parser.add_argument("--resume", type=Path,
+                        help="continue your own trusted neural pickle with a fresh optimizer; its architecture is reused, so --width/--layers/--heads are ignored")
     args = parser.parse_args()
     if not args.data.exists():
         sys.exit(f"no data at {args.data}: run  python src/prepare_data.py  first")
+    if args.resume and not args.resume.exists():
+        sys.exit(f"no checkpoint at {args.resume} to resume from")
     try:
         train(args.data, args.out, target_fpr=args.target_fpr, epochs=args.epochs, batch_size=args.batch_size,
               learning_rate=args.learning_rate, config=NeuralConfig(width=args.width, layers=args.layers, heads=args.heads, dropout=args.dropout),
-              device=args.device, seed=args.seed, baseline=args.baseline, exclude_sources=tuple(args.exclude_source))
+              device=args.device, seed=args.seed, baseline=args.baseline, exclude_sources=tuple(args.exclude_source), init=args.resume)
     except (OSError, ValueError) as error:
         parser.error(str(error))
 

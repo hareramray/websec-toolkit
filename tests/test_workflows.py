@@ -21,7 +21,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from agent import Agent, reflections, with_param
+from agent_data import as_line, as_request, benign_line, benign_request, benign_value, injected, multilingual, other_attack
 from chat import SecurityAssistant
+from prepare_agent_data import build
 from prepare_chat_data import oasst_pairs, wikitext_documents
 from scan_site import scan
 from train_xss import build_pipeline, train as train_xss
@@ -227,13 +229,48 @@ class ImportConversationTests(unittest.TestCase):
         self.assertNotEqual(result[0]["group"], result[1]["group"])
 
 
+class AgentDataTests(unittest.TestCase):
+    """Generated rows for the agent's detector: benign shapes stay benign, attacks keep their payload."""
+
+    def test_benign_generators_never_contain_injectable_markup(self):
+        rng = random.Random(7)
+        for generator in (benign_value, benign_request, benign_line, multilingual, other_attack):
+            for _ in range(400):
+                text = generator(rng)
+                self.assertFalse(injected(text), f"{generator.__name__} produced injectable markup: {text!r}")
+
+    def test_injected_flags_real_payloads_but_not_lookalikes(self):
+        for payload in ("<script>alert(1)</script>", '<img src=x onerror=alert(1)>', "<a href=javascript:alert(1)>x</a>",
+                        '<iframe srcdoc="<script>alert(1)</script>">', "<svg onload=alert(1)>"):
+            self.assertTrue(injected(payload), payload)
+        for safe in ("the onclick handler", "a < b and c > d", "<code>print('hi')</code>", "document.cookie policy", "<b>bold</b>", "/tags/script"):
+            self.assertFalse(injected(safe), safe)
+
+    def test_shaping_preserves_the_payload(self):
+        rng = random.Random(3)
+        for _ in range(50):
+            shaped = as_request("<script>alert(1)</script>", rng)
+            self.assertIn("script", normalize(shaped))
+            self.assertIn("script", normalize(as_line("<img src=x onerror=alert(1)>", rng)) + normalize(shaped))
+
+    def test_build_yields_clean_labelled_rows_of_both_classes(self):
+        df = build(counts=40, base=Path("does-not-exist.csv"), seed=5)
+        self.assertEqual(set(df["label"]), {0, 1})
+        self.assertGreater((df["label"] == 0).sum(), 0)
+        self.assertGreater((df["label"] == 1).sum(), 0)
+        self.assertFalse(df.loc[df["label"] == 0, "text"].map(injected).any(), "a benign row carried injectable markup")
+        attack_norms = {normalize(t) for t in df.loc[df["label"] == 1, "text"]}
+        benign_norms = {normalize(t) for t in df.loc[df["label"] == 0, "text"]}
+        self.assertEqual(attack_norms & benign_norms, set(), "a text is labelled both benign and attack")
+
+
 try:
     import torch
     from chat_model import ASSISTANT, USER, ModelConfig, ScratchTransformer, encode_messages, generate, load_chat_model, save_chat_model
     from train_chat import make_examples, read_records, split_records, train as train_chat
     from train_xss_neural import batches, fit_neural
     from xss_augment import epoch_examples, synthetic_attack
-    from xss_neural import NeuralConfig, NeuralXSS, XSSNet, encode, save_neural
+    from xss_neural import NeuralConfig, NeuralXSS, XSSNet, encode, load_xssnet, save_neural
 except ImportError:
     torch = None
 
@@ -303,6 +340,24 @@ class NeuralXSSTests(unittest.TestCase):
         self.assertEqual(sum(bool(record.get("best")) for record in history) >= 1, True)
         scores = score(NeuralXSS(model, device="cpu"), ["<script>alert(99)</script>", "hello friendly reader 99"])
         self.assertGreater(scores[0], scores[1])
+
+    def test_resume_loads_checkpoint_weights_and_continues_from_them(self):
+        rows = pd.DataFrame({"text": [f"<script>alert({i})</script>" for i in range(40)] + [f"hello friendly reader {i}" for i in range(40)],
+                             "label": [1] * 40 + [0] * 40, "source": "test"})
+        trained, _ = fit_neural(rows, rows, config=self.config, epochs=2, batch_size=8, learning_rate=3e-3, log=lambda *a, **k: None)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ckpt.pkl"
+            save_neural(trained, 0.6, 1.3, path, {"model": {"initialization": "random_weights"}})
+            reloaded, bundle = load_xssnet(path, "cpu")
+        self.assertEqual(reloaded.config, trained.config)  # architecture carried over, not the CLI's
+        for (name, a), (_, b) in zip(reloaded.state_dict().items(), trained.state_dict().items()):
+            self.assertTrue(torch.equal(a, b.cpu()), name)  # weights round-trip exactly
+        before = {name: value.clone() for name, value in reloaded.state_dict().items()}
+        continued, history = fit_neural(rows, rows, config=reloaded.config, epochs=1, batch_size=8, learning_rate=3e-3,
+                                        init_model=reloaded, log=lambda *a, **k: None)
+        self.assertEqual(continued.config, trained.config)
+        self.assertTrue(np.isfinite(history[-1]["train_loss"]))
+        self.assertTrue(any(not torch.equal(before[name], value.cpu()) for name, value in continued.state_dict().items()))
 
     def test_epoch_examples_keep_every_original_attack_and_long_rows_batch_small(self):
         rng = random.Random(1)

@@ -178,8 +178,26 @@ def save_neural(model: XSSNet, threshold: float, temperature: float, path: Path 
 
 def from_bundle(bundle: dict, device: str | None = None) -> NeuralXSS:
     """Rebuild the network from an unpickled bundle. Called by `xss_model.load_model()`."""
+    model, bundle = _rebuild(bundle)
+    return NeuralXSS(model, float(bundle.get("temperature", 1.0)), device)
+
+
+def _rebuild(bundle: dict) -> tuple["XSSNet", dict]:
     if bundle.get("kind") != KIND or bundle.get("format_version") != 1 or bundle.get("tokenizer") != "codepoints_v1":
         raise ValueError("Not a supported neural XSS model pickle.")
     model = XSSNet(NeuralConfig(**bundle["config"]))
     model.load_state_dict({name: torch.from_numpy(np.asarray(value)) for name, value in bundle["state_dict"].items()})
-    return NeuralXSS(model, float(bundle.get("temperature", 1.0)), device)
+    return model, bundle
+
+
+def load_xssnet(path: Path, device: str = "cpu") -> tuple["XSSNet", dict]:
+    """Load the raw trainable network and its saved bundle, to continue training it.
+
+    Returns (model, bundle). The bundle carries the architecture, threshold, calibration
+    temperature and training metadata of the checkpoint. Only load pickles you trust:
+    unpickling runs code stored in the file.
+    """
+    with open(path, "rb") as handle:
+        bundle = pickle.load(handle)
+    model, bundle = _rebuild(bundle)
+    return model.to(device), bundle
