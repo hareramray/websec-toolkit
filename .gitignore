@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded and derived datasets: recreate with  python src/prepare_data.py
+data/raw/
+data/processed/
+
+# Trained model and metrics: recreate with  python src/train_xss.py
+models/

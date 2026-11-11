@@ -1,0 +1,80 @@
+hello world
+john.doe@example.com
+https://www.google.com/search?q=python+tutorial&hl=en
+https://shop.example.com/products?category=shoes&sort=price_asc&page=2
+<b>bold text</b>
+<p>Thanks for the great article!</p>
+<a href="https://example.com/page">read more</a>
+<img src="/images/photo.jpg" alt="My holiday">
+I love the script tag tutorial on MDN
+if (a < b && c > d) { return x; }
+price < 100 and rating > 4
+SELECT * FROM users WHERE id = 1
+The onerror handler in JavaScript is useful
+3 > 2
+O'Reilly & Sons <info@oreilly.example>
+function add(a, b) { return a + b; }
+{"name": "Alice", "tags": ["a", "b"]}
+<h1>Welcome</h1><ul><li>First item</li><li>Second item</li></ul>
+<div class="card"><span style="color:red">Sale!</span> 20% off today</div>
+My password is P@ssw0rd!<>?
+C:\Users\me\Documents\report.docx
+https://en.wikipedia.org/wiki/Cross-site_scripting
+https://github.com/psf/requests/issues?q=is%3Aopen+label%3Abug
+https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s
+http://localhost:3000/api/users?limit=20&offset=40
+https://maps.example.com/dir/?api=1&origin=Delhi&destination=Mumbai&travelmode=driving
+<table><tr><th>Name</th><th>Age</th></tr><tr><td>Ravi</td><td>31</td></tr></table>
+<blockquote>To be, or not to be</blockquote>
+<em>Note:</em> the meeting moved to <strong>3 pm</strong>.
+<a href="mailto:support@example.com">Contact support</a>
+<p style="text-align:center">Happy Diwali to everyone!</p>
+<img src="https://cdn.example.com/avatars/42.png" width="64" height="64" alt="avatar">
+<ol><li>Preheat the oven</li><li>Mix flour and sugar</li></ol>
+<code>print("hello")</code>
+x = y > 0 ? y : -y;
+for (let i = 0; i < items.length; i++) { total += items[i].price; }
+Use the alert() function carefully in production code
+Dear Sir/Madam, please find my resume attached. Regards, Priya
+Rs. 1,499 (incl. taxes) - 20% off!
++91 98765 43210
+2026-11-11T14:30:00+05:30
+Tom & Jerry: "The Movie" (1992)
+/home/user/projects/app/src/index.js
+Vector<String> names = new Vector<>();
+echo "done" > output.log && cat output.log
+What's the difference between onclick and addEventListener?
+#include <stdio.h>
+**bold** and [a link](https://example.com)
+<span class="badge badge-success">In stock</span>
+<h2 id="pricing">Pricing</h2><p>Plans start at $5 per month.</p>
+user_name-2024@mail.example.co.in
+The <video> element supports mp4 and webm.
+<video controls src="/media/intro.mp4"></video>
+a <= b <= c
+Redirecting you to the document cookie policy page
+Hi team, the Q3 report is attached. Let me know if 5 > 3 holds in your tests :)
+https://www.amazon.in/s?k=wireless+mouse&crid=2K3J4&ref=nb_sb_noss
+https://docs.python.org/3/library/html.parser.html#html.parser.HTMLParser
+<p>Our <a href="/pricing">pricing</a> is simple.</p>
+<strong>Warning:</strong> do not share your OTP with anyone.
+<ul class="nav"><li><a href="/">Home</a></li><li><a href="/about">About</a></li></ul>
+<figure><img src="chart.png" alt="Sales chart"><figcaption>Sales in 2025</figcaption></figure>
+<td align="right">Rs 2,300</td>
+if (response.status >= 200 && response.status < 300) { resolve(response); }
+const el = document.getElementById("app");
+Learn how event handlers like onload and onclick work in HTML
+10 < x < 20
+Ravi <ravi.kumar@example.in>, Meena <meena@example.in>
+git commit -m "fix: handle <br> tags in parser"
+<br>
+<hr class="divider">
+https://example.org/login?redirect=/dashboard&lang=hi
+{"query": "shoes", "filters": {"price": {"lt": 100}}, "page": 2}
+<h3>FAQ</h3><p>Q: Is it free? A: Yes!</p>
+The script was written by the film's director
+<audio controls><source src="song.mp3" type="audio/mpeg"></audio>
+width > height ? "landscape" : "portrait"
+<pre>def add(a, b): return a + b</pre>
+Meeting @ 4pm <tentative>
+<span style="font-size:12px;color:#888">Posted on 11 Nov 2026</span>

