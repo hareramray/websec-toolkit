@@ -129,6 +129,35 @@ def check_csrf(response, page: PageParser) -> list[tuple[str, str]]:
     return findings
 
 
+def scan(url: str, cookie: str | None = None, timeout: float = 15) -> dict:
+    """Fetch a user-selected page and return structured findings for CLI or chat."""
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("the URL must start with http:// or https://")
+    headers = {"User-Agent": "websec-check/1.0"}
+    if cookie:
+        headers["Cookie"] = cookie
+    return analyze(requests.get(url, headers=headers, timeout=timeout))
+
+
+def analyze(response) -> dict:
+    """Clickjacking and CSRF findings for a response that was already fetched."""
+    page = PageParser()
+    if "html" in response.headers.get("Content-Type", "").lower():
+        page.feed(response.text)
+    sections = {"Clickjacking": check_clickjacking(response.headers), "CSRF": check_csrf(response, page)}
+    issues = sum(level in (FAIL, WARN) for findings in sections.values() for level, _ in findings)
+    return {"url": response.url, "status_code": response.status_code, "sections": sections, "issue_count": issues}
+
+
+def format_report(result: dict) -> str:
+    lines = [f"Checked {result['url']} (HTTP {result['status_code']})"]
+    for title, findings in result["sections"].items():
+        lines.append(f"\n{title}")
+        lines.extend(f"  [{level}] {message}" for level, message in findings)
+    lines.append(f"\n{result['issue_count']} issue(s) found." if result["issue_count"] else "\nNo issues found by these checks.")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("url", help="page to check, starting with http:// or https://")
@@ -138,29 +167,14 @@ def main() -> int:
     if not args.url.startswith(("http://", "https://")):
         parser.error("the URL must start with http:// or https://")
 
-    headers = {"User-Agent": "websec-check/1.0"}
-    if args.cookie:
-        headers["Cookie"] = args.cookie
     try:
-        response = requests.get(args.url, headers=headers, timeout=args.timeout)
+        result = scan(args.url, args.cookie, args.timeout)
     except requests.RequestException as error:
         print(f"could not fetch {args.url}: {error}")
         return 2
 
-    page = PageParser()
-    if "html" in response.headers.get("Content-Type", "").lower():
-        page.feed(response.text)
-
-    print(f"Checked {response.url} (HTTP {response.status_code})")
-    sections = {"Clickjacking": check_clickjacking(response.headers), "CSRF": check_csrf(response, page)}
-    for title, findings in sections.items():
-        print(f"\n{title}")
-        for level, message in findings:
-            print(f"  [{level}] {message}")
-
-    issues = [level for findings in sections.values() for level, _ in findings if level in (FAIL, WARN)]
-    print(f"\n{len(issues)} issue(s) found." if issues else "\nNo issues found by these checks.")
-    return 1 if issues else 0
+    print(format_report(result))
+    return 1 if result["issue_count"] else 0
 
 
 if __name__ == "__main__":

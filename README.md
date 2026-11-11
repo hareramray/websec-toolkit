@@ -1,75 +1,271 @@
-# Web security checks: XSS, CSRF, clickjacking
+# Local security assistant with models trained from scratch
 
-Two tools, because the three problems are different in kind:
+Chat locally, classify possible XSS, let an agent audit a site or triage a log, and
+inspect a page for CSRF and clickjacking indicators. No hosted model, API key,
+pretrained weights, or pretrained tokenizer is used.
 
-| Problem | Tool | Why |
+| Part | What it does | Saved artifact |
 |---|---|---|
-| XSS | Trained model (`train_xss.py`, `predict_xss.py`) | Payloads vary endlessly, so a model that learns their patterns helps. |
-| CSRF, clickjacking | Rule-based scanner (`scan_site.py`) | These are missing headers, tokens and cookie flags. Each has an exact definition, so rules are more reliable than a model. |
+| Neural XSS classifier | Character convolutions + Transformer encoder, trained on a GPU from random weights. The strongest detector here; used by default once trained | `models/xss_neural.pkl` |
+| Linear XSS classifier | Character TF-IDF + logistic regression. Fast, needs no PyTorch, and is the baseline the neural model is measured against | `models/xss_model.pkl` |
+| Security agent | Given a goal, plans its own steps: fetches pages, maps inputs, runs the detector, probes parameters, follows up on what it finds, and reports each step and finding | `src/agent.py` |
+| Text generator | Causal Transformer initialized with random weights; learns to predict UTF-8 bytes | `models/chat_model.pkl` |
+| Assistant controller | Routes explicit requests, runs security tools and the agent, remembers the last classification, and generates other replies | `src/chat.py` |
+| Page scanner | Checks response headers, cookies and HTML forms with rules | No trained weights |
 
-## Setup
+The assistant is a **hybrid with rule-based tool routing**. For `/check`, it
+normalizes input, scores it, explains influential character fragments, and selects
+a next-step recommendation based on the verdict. Follow-up `/why` uses the saved
+result. Ordinary conversation uses the Transformer. Generated text is never
+interpreted as a command.
+
+The **agent** chooses its own next step from what it has observed, but its planner
+is rules plus the trained detector, not a language model. It pursues three kinds
+of goal (audit a URL, triage a file, judge a text) and cannot take on open-ended
+instructions. See [Security agent](#security-agent).
+
+The bundled **64 conversation pairs are a training demonstration**. The starter
+model can generate text, but sampled replies are not yet coherent. Its validation
+loss worsens as it memorizes the small corpus. Useful open-ended chat requires much
+more language/conversation data and compute; training on XSS strings alone will
+not provide that. Security tool results are returned directly from code and are
+labelled separately from experimental generated text.
+
+## Setup and train
+
+Run in PowerShell from the project root (Python 3.10+):
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-chat.txt
+
+# XSS: download, clean, train and evaluate the linear baseline
+.\.venv\Scripts\python.exe src\prepare_data.py
+.\.venv\Scripts\python.exe src\train_xss.py
+
+# XSS: evaluation-only benchmark, then the neural model (GPU recommended, see below)
+.\.venv\Scripts\python.exe src\prepare_external.py
+.\.venv\Scripts\python.exe src\train_xss_neural.py
+
+# Language model: randomly initialized Transformer, no downloaded weights
+.\.venv\Scripts\python.exe src\train_chat.py --steps 600
+
+# Start interactive chat
+.\.venv\Scripts\python.exe src\chat.py
 ```
 
-## XSS model
+Training creates real Python pickle files and JSON metrics under `models/`.
+These generated artifacts are ignored by Git. Only load trusted pickles;
+unpickling can execute code.
+
+For the linear classifier, agent and scanner without PyTorch, install
+`requirements.txt` and run `src/chat.py --tools-only`.
+
+### GPU
+
+`requirements-chat.txt` installs the CPU build of PyTorch. For an NVIDIA GPU,
+replace it with a CUDA build that your driver supports. This workspace uses an
+RTX 5050 with driver 577, which supports CUDA 12.x:
 
 ```powershell
-.\.venv\Scripts\python.exe src\prepare_data.py     # download and clean the data
-.\.venv\Scripts\python.exe src\train_xss.py        # train, evaluate, save models\xss_model.joblib
+.\.venv\Scripts\python.exe -m pip install "torch==2.11.0" --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+`train_xss_neural.py` and `train_chat.py --device cuda` then use the GPU. Plug the
+laptop in first: on battery Windows slows the GPU to a fraction of its speed.
+The neural model also runs on a CPU, more slowly.
+
+## Chat examples
+
+```text
+You> /check <img src=x onerror=alert(1)>
+You> why?
+You> check: <b>hello</b>
+You> /scan https://your-authorized-site.example/account
+You> /agent audit https://your-authorized-site.example/
+You> /agent triage logs/access.log
+You> /metrics
+You> /datasets
+You> /train
+You> What is XSS?
+You> /reset
+You> /quit
+```
+
+`/train` prints the training commands. It does not silently retrain weights.
+Chat history stays in memory and is not added to training data. `/reset` clears
+history and the last analysis; restart chat after retraining to load new weights.
+The neural model sees at most its configured context length (256 **bytes/markers**
+by default), so long conversations lose earlier context.
+
+One-shot use and custom models:
+
+```powershell
+.\.venv\Scripts\python.exe src\chat.py --tools-only --message "/check <b>hello</b>"
+.\.venv\Scripts\python.exe src\chat.py --message "hello" --temperature 0 --max-new-tokens 160
+.\.venv\Scripts\python.exe src\chat.py --model models\xss_expanded.pkl --chat-model models\chat_model.pkl
+```
+
+Without `--model`, chat, `predict_xss.py` and the agent use `models/xss_neural.pkl`
+when it exists and PyTorch is installed, and `models/xss_model.pkl` otherwise.
+
+## Publish the neural detector on Hugging Face
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-hf.txt
+.\.venv\Scripts\hf.exe auth login          # paste a token with write access
+.\.venv\Scripts\python.exe src\export_hf.py --repo-id your-name/xss-detector            # build dist\hf only
+.\.venv\Scripts\python.exe src\export_hf.py --repo-id your-name/xss-detector --push     # upload as a private repo
+```
+
+The package holds `model.safetensors` (no pickle), `config.json`, a standalone
+`xss_detector.py` that needs only torch, numpy and safetensors, `metrics.json`
+with local paths removed, and a model card generated from the saved metrics.
+Add `--public` to publish openly and `--license` to change the license id. The
+exporter refuses to build a card for a training source it has no license entry for.
+The published model: https://huggingface.co/hareramray325/websec
+
+## Security agent
+
+```powershell
+.\.venv\Scripts\python.exe src\agent.py "audit https://your-authorized-site.example/"
+.\.venv\Scripts\python.exe src\agent.py "audit https://your-authorized-site.example/" --active
+.\.venv\Scripts\python.exe src\agent.py "triage logs\access.log"
+.\.venv\Scripts\python.exe src\agent.py "is this xss: <img src=x onerror=alert(1)>"
+```
+
+The agent keeps an agenda of possible next steps, each with a priority and a
+reason. It runs the most useful one, reads the result, and lets the result add or
+re-order steps. It prints every step with why it was chosen and what it saw.
+
+| Goal | What the agent does |
+|---|---|
+| Audit a URL | Fetches the page, checks framing, CSRF, cookie and script-policy headers, maps links, forms and parameters, scores values already in the page with the detector, visits same-site links (those the detector flags first), and flags inline scripts that connect a URL source to an HTML sink |
+| Audit with `--active` | Also sends each query parameter one marker value followed by `<'">`, then reports where it came back and whether those characters were encoded for that context |
+| Triage a file | Scores every line (extracting the request from access-log lines), re-scores the separate values of lines just under the threshold, and explains the strongest hits |
+| Judge a text | Scores it, explains it, and re-checks its parts when the score is borderline |
+
+Limits you should know:
+
+- **Only audit sites you own or are authorised to test.** Active mode sends test
+  requests. It never sends a working payload, never submits POST forms, skips
+  logout and delete links, stays on the starting site, and waits between requests.
+- "Reflected XSS likely" means the marker came back unencoded in a position where
+  script can be injected. Confirm it in a browser before treating it as proven.
+- Stored XSS, pages behind a login (unless you pass `--cookie`), and content built
+  by JavaScript are not covered. Budgets: `--max-pages 8`, `--max-probes 12`.
+- The planner is rule-based. There is no language model behind it, so it does not
+  understand goals outside the table above.
+
+## Add datasets and train larger models
+
+See [the dataset and training guide](docs/DATASETS.md) for source links, licenses,
+CSV/JSONL formats, import commands, evaluation guidance, and larger training runs.
+It includes additional XSS sources (Kaggle, SecLists, FuzzDB) and separate language
+sources (WikiText, OpenAssistant, SmolTalk).
+See [the local training report](docs/TRAINING_RESULTS.md) for the commands and
+measured results from this workspace.
+
+Import a labelled CSV and retrain the classifier:
+
+```powershell
+.\.venv\Scripts\python.exe src\import_dataset.py data\raw\extra.csv --text-column Sentence --label-column Label --source extra_xss --base data\processed\xss.csv --out data\processed\xss_expanded.csv
+.\.venv\Scripts\python.exe src\train_xss.py --data data\processed\xss_expanded.csv --out models\xss_expanded.pkl
+```
+
+Train your language model on your own JSONL conversations:
+
+```powershell
+.\.venv\Scripts\python.exe src\train_chat.py --data data\raw\my_dialogues.jsonl --steps 5000
+```
+
+Use `--init models\language_base.pkl` to continue your own earlier weights with a
+fresh optimizer. Without `--init`, training always starts from random weights.
+The defaults use 2 Transformer blocks, 96-dimensional embeddings, 4 attention
+heads, and 298,368 parameters. The trainer keeps the checkpoint with lowest
+validation next-byte loss. This loss is not factual accuracy.
+
+## XSS evaluation
+
+```powershell
 .\.venv\Scripts\python.exe src\predict_xss.py "<img src=x onerror=alert(1)>" "<b>hello</b>"
+.\.venv\Scripts\python.exe src\predict_xss.py --file inputs.txt
 ```
 
-The model is character n-gram TF-IDF with logistic regression. Input is URL-decoded
-and HTML-unescaped (up to three rounds) and lowercased before scoring, and long input
-is scored in overlapping windows so a payload cannot be hidden by padding.
+Text is URL-decoded, HTML-unescaped, lowercased, and scored in overlapping windows.
+Training normalizes and deduplicates rows, removes conflicting labels, and excludes
+exact normalized matches to `data/challenge/*.txt` before splitting. The threshold
+is tuned on validation data. The saved classifier is the evaluated training-split
+model, not a subsequent refit on test rows.
 
-Training data (`source` column in `data/processed/xss.csv`):
+Read current results in `models/xss_metrics.json`: held-out detection rate, false
+alarms, per-source results, challenge mistakes and the external benchmark. Custom
+output names get corresponding metrics files, such as `xss_expanded_metrics.json`.
+`--exclude-source NAME` drops one source before splitting, for example data whose
+license does not allow your use.
 
-| Source | Benign | XSS | What it is |
-|---|---|---|---|
-| `mereani` | 28,067 | 14,372 | Mereani & Howe 2018 (MIT): attack URLs, benign URLs, JavaScript, text |
-| `webattacks` | 4,830 | 9,246 | shengqin/web-attacks-long on Hugging Face (no licence stated) |
-| `twin_urls` | 13,429 | 0 | The mereani attack URLs rebuilt without their payload |
-| `synthetic` | 12,397 | 0 | Generated everyday HTML, URLs and short strings (`synthetic.py`) |
+The neural model uses the same rows, split, threshold rule and evaluations, and
+writes `models/xss_neural_metrics.json`, which also holds the linear model's
+results on the same rows. Its training set is varied every epoch: proof-of-concept
+calls are swapped for real actions, attacks are placed inside benign text and URLs,
+and template-built attacks and benign look-alikes are added (`src/xss_augment.py`).
+Only training rows are varied.
 
-Results of the last run (`models/xss_metrics.json`):
+`prepare_external.py` builds an **evaluation-only benchmark**: SecLists payload
+lists as attacks, WikiText and OpenAssistant text as benign. Nothing is fitted or
+tuned on it. Both trainers report it, with the attack lines that match no project
+row counted separately. It is the fairest comparison here, with limits: the lists
+overlap in style with the training sources, and the benign text is mostly prose.
 
-| Evaluation | Attacks caught | False alarms |
-|---|---|---|
-| Held-out test split (12,352 samples) | 98.2% | 0.08% |
-| Trained on mereani, tested on webattacks | 98.3% | 0.00% |
-| Trained on webattacks, tested on mereani | 92.6% | 3.02% |
-| Challenge set (`data/challenge/`, hand-written, never trained on) | 60 of 60 | 0 of 80 |
+The earlier challenge set had 14 exact overlaps with the prepared training data;
+the trainer now removes those. Challenge examples also guided earlier project
+changes, so this set is a regression check rather than an untouched benchmark.
+Exact deduplication does not prevent related payload families from crossing splits.
+The synthetic benign examples do not replace testing on realistic normal traffic.
+A detector score does not prove that a payload is exploitable or safe.
 
-Read these with care:
-
-- The held-out number is flattering: test rows come from the same sources as training rows.
-- The challenge set guided two rounds of fixes, so only its last 20 attacks and 25 benign
-  lines (added afterwards and scored once) are an untouched check.
-- The benign HTML and URLs are generated, not real traffic. Before using the model as a
-  filter, score a sample of your own site's normal input and count the false alarms.
-- A detector does not fix XSS. The fix is escaping output and a Content-Security-Policy.
-
-To improve the model, add lines it gets wrong to `data/challenge/`, then add more
-training data of that kind in `prepare_data.py` or `synthetic.py`.
-
-## CSRF and clickjacking scanner
+## Page scanner
 
 ```powershell
-.\.venv\Scripts\python.exe src\scan_site.py https://your-site.example/account
-.\.venv\Scripts\python.exe src\scan_site.py https://your-site.example/account --cookie "sessionid=abc123"
+.\.venv\Scripts\python.exe src\scan_site.py https://your-authorized-site.example/account
+.\.venv\Scripts\python.exe src\scan_site.py https://your-authorized-site.example/account --cookie "sessionid=abc123"
 ```
 
-It sends one GET request and reads the headers, cookies and forms. Only scan sites you
-own or have permission to test.
+Only scan sites you own or have permission to test. The scanner uses GET (following
+redirects), examines framing policies, token fields, and SameSite cookies, and does
+not submit forms or execute JavaScript. Findings are indicators to verify with the
+application's actual behavior; JavaScript forms and header-based CSRF tokens may
+not be visible. Standalone exit codes: 0 no issues, 1 issues, 2 fetch failure.
 
-- **Clickjacking** fails when the page has neither `X-Frame-Options: DENY/SAMEORIGIN`
-  nor a restrictive CSP `frame-ancestors` directive.
-- **CSRF** warns when a POST form has no token field, or a cookie has `SameSite=None`
-  or no `SameSite` at all. These are leads to confirm by hand: forms built by JavaScript
-  and tokens sent in request headers are not visible to this check.
+## Verification
 
-Exit code is 0 for no issues, 1 for issues, 2 if the page could not be fetched.
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Tests cover causal attention, assistant-only training targets, real weight updates,
+pickle round trips, conversation split boundaries, XSS data cleaning and challenge
+exclusion, chat follow-ups, and scanner integration with a mocked response. For the
+neural detector they cover the pickle round trip through the shared loader, padding
+invariance, a real training run and the per-epoch variation. For the agent they run
+audits against a local test site with one unsafe and one safe reflection, check that
+passive mode sends no probe, and check log triage and the `/agent` chat command.
+The Hugging Face export is checked to reproduce the project model's scores exactly.
+
+## License and data
+
+The code is released under the [MIT License](LICENSE). Training uses only openly
+licensed or generated data:
+
+| Data | Used for | License |
+|---|---|---|
+| [Mereani & Howe XSS dataset](https://github.com/fmereani/Cross-Site-Scripting-XSS) | XSS detector training | MIT |
+| Generated samples (`src/synthetic.py`, `src/xss_augment.py`) | XSS detector training | Part of this project |
+| [SecLists XSS lists](https://github.com/danielmiessler/SecLists/tree/master/Fuzzing/XSS) | XSS evaluation only | MIT |
+| [WikiText](https://huggingface.co/datasets/Salesforce/wikitext) | Language model; XSS false-alarm evaluation | CC BY-SA 3.0 / GFDL |
+| [OpenAssistant oasst1](https://huggingface.co/datasets/OpenAssistant/oasst1) | Language model; XSS false-alarm evaluation | Apache 2.0 |
+
+Datasets are downloaded by the preparation scripts and are not stored in this
+repository. The hand-written challenge set in `data/challenge/` and the starter
+dialogues in `data/chat/` were written for this project.

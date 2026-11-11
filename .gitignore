@@ -9,3 +9,6 @@ data/processed/
 
 # Trained model and metrics: recreate with  python src/train_xss.py
 models/
+
+# Hugging Face packages: recreate with  python src/export_hf.py
+dist/

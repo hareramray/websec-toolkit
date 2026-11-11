@@ -1,0 +1,2 @@
+-r requirements-chat.txt
+datasets>=4,<6

@@ -1,16 +1,16 @@
-"""Download the public XSS datasets and merge them into one clean training file.
+"""Download the public XSS dataset and merge it with generated samples into one clean training file.
 
 Usage:  python src/prepare_data.py
 
 Sources (the `source` column of the output)
   mereani     Mereani & Howe (2018), MIT licence. XSS attack URLs plus benign URLs,
               JavaScript and plain text.
-  webattacks  shengqin/web-attacks-long on Hugging Face (no licence stated).
-              XSS payloads plus normal sentences and JSON. Its SQL-injection rows
-              are dropped: this model only answers "is this XSS?".
   twin_urls   Benign copies of the mereani attack URLs: same site, path and
               parameter names, with the payload swapped for a harmless value.
   synthetic   Generated everyday HTML, URLs and short strings (see synthetic.py).
+
+Only openly licensed data is used. Add other labelled data with import_dataset.py
+after checking its licence.
 """
 from __future__ import annotations
 
@@ -32,9 +32,6 @@ OUT = ROOT / "data" / "processed" / "xss.csv"
 
 FILES = {
     RAW / "mereani" / "Payloads.csv": "https://raw.githubusercontent.com/fmereani/Cross-Site-Scripting-XSS/master/XSSDataSets/Payloads.csv",
-    RAW / "webattacks" / "train.csv": "https://huggingface.co/datasets/shengqin/web-attacks-long/resolve/main/train.csv",
-    RAW / "webattacks" / "validate.csv": "https://huggingface.co/datasets/shengqin/web-attacks-long/resolve/main/validate.csv",
-    RAW / "webattacks" / "test.csv": "https://huggingface.co/datasets/shengqin/web-attacks-long/resolve/main/test.csv",
 }
 
 _CLEAN_KEY = re.compile(r"^[\w\-.\[\]]{1,40}$")
@@ -63,13 +60,6 @@ def load_mereani() -> pd.DataFrame:
     text = df["Payloads"].astype(str).str.replace("<br>", "", regex=False)
     label = df["Class"].str.strip().map({"Malicious": 1, "Benign": 0})
     return pd.DataFrame({"text": text, "label": label, "source": "mereani"}).dropna()
-
-
-def load_webattacks() -> pd.DataFrame:
-    df = pd.concat(pd.read_csv(RAW / "webattacks" / f"{name}.csv") for name in ("train", "validate", "test"))
-    df = df[df["text_label"].isin(["XSS", "normal"])]
-    label = (df["text_label"] == "XSS").astype(int)
-    return pd.DataFrame({"text": df["Payload"].astype(str), "label": label, "source": "webattacks"})
 
 
 def benign_twin(url: str, rng: random.Random) -> tuple[str, str] | None:
@@ -113,7 +103,7 @@ def twin_urls(attacks: pd.Series) -> pd.DataFrame:
 
 def main() -> None:
     download()
-    df = pd.concat([load_mereani(), load_webattacks()], ignore_index=True)
+    df = load_mereani()
     df["label"] = df["label"].astype(int)
     df["text"] = df["text"].map(normalize)
     print(f"dataset rows: {len(df)}")

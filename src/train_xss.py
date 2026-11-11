@@ -1,11 +1,13 @@
-"""Train and evaluate the XSS detector.
+"""Train and evaluate the XSS detector, and save it as a pickle file.
 
 Usage:  python src/train_xss.py [--target-fpr 0.001]
 
+Writes models/xss_model.pkl (the model) and models/xss_metrics.json (its scores).
+
 Three evaluations are reported, from most to least flattering:
   1. Held-out test split of the combined data.
-  2. Cross-source: train on one public dataset, test on the other.
-  3. Challenge set: hand-written inputs in data/challenge/ that are never trained on.
+  2. Challenge set: hand-written inputs in data/challenge/ that are never trained on.
+  3. External benchmark from prepare_external.py, which nothing is fitted or tuned on.
 """
 from __future__ import annotations
 
@@ -17,7 +19,6 @@ import sys
 import time
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -28,9 +29,10 @@ from sklearn.pipeline import Pipeline
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import synthetic  # noqa: E402
-from xss_model import WINDOW, score, windows  # noqa: E402
+from xss_model import MODEL_PATH, ROOT, WINDOW, normalize, save_model, score, windows  # noqa: E402
+from xss_data import read_rows  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+DATA_PATH = ROOT / "data" / "processed" / "xss.csv"
 SEED = 42
 MAX_BENIGN_WINDOWS = 8
 
@@ -55,10 +57,6 @@ REAL_ACTIONS = [  # lowercase, like all normalised text
     "steal()",
     "x()",
 ]
-
-# For the cross-source test: what may be trained on alongside each public dataset.
-# twin_urls is built from mereani's attacks, so it must stay out when mereani is the test set.
-TRAIN_WITH = {"mereani": ["mereani", "twin_urls", "synthetic"], "webattacks": ["webattacks", "synthetic"]}
 
 
 def build_pipeline() -> Pipeline:
@@ -194,19 +192,79 @@ def challenge(model: Pipeline, threshold: float) -> dict | None:
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data", type=Path, default=ROOT / "data" / "processed" / "xss.csv")
-    parser.add_argument("--out", type=Path, default=ROOT / "models" / "xss_model.joblib")
-    parser.add_argument("--target-fpr", type=float, default=0.001, help="false-alarm rate the threshold is tuned for")
-    args = parser.parse_args()
+def external(model, threshold: float, known: set[str]) -> dict | None:
+    """Score the evaluation-only benchmark from prepare_external.py, when it exists.
 
-    df = pd.read_csv(args.data, keep_default_na=False)
-    df["text"] = df["text"].astype(str)
-    strata = df["source"] + df["label"].astype(str)
-    train, rest = train_test_split(df, test_size=0.30, stratify=strata, random_state=SEED)
-    val, test = train_test_split(rest, test_size=0.50, stratify=strata[rest.index], random_state=SEED)
+    `known` holds every normalised project row. Attack lines that match one exactly
+    were possibly trained on, so the lines that match none are also reported alone.
+    """
+    path = ROOT / "data" / "processed" / "xss_external.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path, keep_default_na=False)
+    df = df.assign(flagged=score(model, df["text"].tolist(), normalized=True) > threshold, unseen=~df["text"].isin(known))
+    out = {"attack_sources": {}, "benign_sources": {}}
+    print(f"\nExternal benchmark (never trained on) at threshold {threshold:.3f}")
+    for source, rows in df.groupby("source"):
+        if rows["label"].iloc[0] == 1:
+            fresh = rows[rows["unseen"]]
+            out["attack_sources"][source] = {"attacks": len(rows), "caught": int(rows["flagged"].sum()),
+                                             "unseen_attacks": len(fresh), "unseen_caught": int(fresh["flagged"].sum())}
+        else:
+            out["benign_sources"][source] = {"benign": len(rows), "false_alarms": int(rows["flagged"].sum())}
+    attacks, benign = df[df["label"] == 1], df[df["label"] == 0]
+    fresh = attacks[attacks["unseen"]]
+    out.update(attacks=len(attacks), caught=int(attacks["flagged"].sum()), unseen_attacks=len(fresh),
+               unseen_caught=int(fresh["flagged"].sum()), benign=len(benign), false_alarms=int(benign["flagged"].sum()),
+               false_alarm_examples=benign.loc[benign["flagged"], "text"].str.slice(0, 200).head(20).tolist())
+    print(f"  attacks caught: {out['caught']}/{out['attacks']}  |  not in any project data: {out['unseen_caught']}/{out['unseen_attacks']}")
+    print(f"  false alarms:   {out['false_alarms']}/{out['benign']}")
+    return out
+
+
+def split_data(data: Path, exclude_sources: tuple[str, ...] = ()) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Read, clean and split `data`: (all rows, cleaning report, train, validation, test).
+
+    Every trainer uses this one function, so different models are fitted and compared
+    on exactly the same rows. Rows from `exclude_sources` are dropped before splitting,
+    for example a dataset whose license does not allow your use.
+    """
+    df, cleaning = read_rows(data)
+    if exclude_sources:
+        excluded = df["source"].isin(exclude_sources)
+        cleaning["excluded_sources"] = sorted(exclude_sources)
+        cleaning["excluded_source_rows"] = int(excluded.sum())
+        df = df[~excluded].reset_index(drop=True)
+        print(f"Excluded sources {', '.join(sorted(exclude_sources))}: removed {int(excluded.sum())} rows.")
+    reserved = {normalize(line) for path in (ROOT / "data" / "challenge").glob("*.txt")
+                for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    overlap = df["text"].isin(reserved)
+    cleaning["challenge_overlap_rows_removed"] = int(overlap.sum())
+    df = df[~overlap].reset_index(drop=True)
+    if overlap.any():
+        print(f"Reserved challenge set: removed {int(overlap.sum())} overlapping training rows.")
+    counts = df["label"].value_counts()
+    if set(counts.index) != {0, 1} or counts.min() < 10:
+        raise ValueError("Training needs at least 10 distinct cleaned samples of EACH class; use much more for meaningful evaluation.")
+    # A source with only a handful of rows cannot be split three ways on its own.
+    strata = df["source"] + ":" + df["label"].astype(str)
+    strata = strata.where(strata.map(strata.value_counts()) >= 10, "small" + df["label"].astype(str))
+    try:
+        train, rest = train_test_split(df, test_size=0.30, stratify=strata, random_state=SEED)
+        val, test = train_test_split(rest, test_size=0.50, stratify=strata[rest.index], random_state=SEED)
+    except ValueError:
+        print("Small source groups: stratifying by label only.")
+        train, rest = train_test_split(df, test_size=0.30, stratify=df["label"], random_state=SEED)
+        val, test = train_test_split(rest, test_size=0.50, stratify=rest["label"], random_state=SEED)
     print(f"train {len(train)} | validation {len(val)} | test {len(test)}")
+    return df, cleaning, train, val, test
+
+
+def train(data: Path = DATA_PATH, out: Path = MODEL_PATH, target_fpr: float = 0.001, exclude_sources: tuple[str, ...] = ()) -> dict:
+    """Train on `data`, evaluate, save the pickle file and the metrics. Returns the metrics."""
+    if not 0 <= target_fpr <= 1:
+        raise ValueError("target_fpr must be between 0 and 1")
+    df, cleaning, train, val, test = split_data(data, exclude_sources)
 
     start = time.time()
     model = fit(train)
@@ -215,32 +273,37 @@ def main() -> None:
     # Tune the threshold on validation data, never on the test set. It is not allowed
     # below 0.5: a tiny threshold fits this data but over-reacts to unfamiliar input.
     val_scores = score(model, val["text"].tolist(), normalized=True)
-    threshold = max(0.5, threshold_for_fpr(val["label"].to_numpy(), val_scores, args.target_fpr))
+    threshold = max(0.5, threshold_for_fpr(val["label"].to_numpy(), val_scores, target_fpr))
 
-    metrics = {"threshold": threshold, "target_fpr": args.target_fpr}
+    metrics = {"threshold": threshold, "target_fpr": target_fpr, "rows": int(len(df)), "sources": sorted(df["source"].unique()), "cleaning": cleaning}
     test_scores = score(model, test["text"].tolist(), normalized=True)
     metrics["held_out_test"] = evaluate(test["label"].to_numpy(), test_scores, threshold)
     show("Held-out test split", metrics["held_out_test"])
     metrics["held_out_test"]["by_source"] = by_source(test, test_scores, threshold)
 
-    for train_source, allowed in TRAIN_WITH.items():
-        for test_source in TRAIN_WITH:
-            if test_source == train_source or not {train_source, test_source} <= set(df["source"]):
-                continue
-            other = df[df["source"] == test_source]
-            cross_model = fit(df[df["source"].isin(allowed)])
-            cross_scores = score(cross_model, other["text"].tolist(), normalized=True)
-            key = f"train_{train_source}_test_{test_source}"
-            metrics[key] = evaluate(other["label"].to_numpy(), cross_scores, 0.5)
-            show(f"Cross-source: trained on {train_source}, tested on {test_source}", metrics[key])
-
     metrics["challenge_set"] = challenge(model, threshold)
+    metrics["external_benchmark"] = external(model, threshold, set(df["text"]))
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"pipeline": model, "threshold": threshold}, args.out)
-    metrics_path = args.out.with_name("xss_metrics.json")
+    save_model(model, threshold, out)
+    metrics_path = out.with_name(out.stem.replace("_model", "") + "_metrics.json")
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    print(f"\nsaved {args.out.relative_to(ROOT)} and {metrics_path.relative_to(ROOT)}")
+    print(f"\nsaved {out} and {metrics_path}")
+    return metrics
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--data", type=Path, default=DATA_PATH)
+    parser.add_argument("--out", type=Path, default=MODEL_PATH)
+    parser.add_argument("--target-fpr", type=float, default=0.001, help="false-alarm rate the threshold is tuned for")
+    parser.add_argument("--exclude-source", action="append", default=[], help="drop rows of this source before splitting (repeatable)")
+    args = parser.parse_args()
+    if not args.data.exists():
+        sys.exit(f"no data at {args.data}: run  python src/prepare_data.py  first")
+    try:
+        train(args.data, args.out, args.target_fpr, exclude_sources=tuple(args.exclude_source))
+    except ValueError as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":
